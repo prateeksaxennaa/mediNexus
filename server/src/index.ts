@@ -3,13 +3,20 @@ import { setGlobalDispatcher, Agent } from 'undici';
 
 dns.setDefaultResultOrder('ipv4first');
 
-// Force IPv4 lookup for all global fetch/undici requests to prevent IPv6/AAAA drops on local routers
+// In development, handle local SSL inspection / Wi-Fi proxies gracefully to avoid SELF_SIGNED_CERT_IN_CHAIN
+const isDev = process.env.NODE_ENV !== 'production';
+if (isDev) {
+  process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+}
+
+// Force IPv4 lookup & configured TLS verification for all global fetch/undici requests
 setGlobalDispatcher(
   new Agent({
     connect: {
       lookup: (hostname, options, callback) => {
         dns.lookup(hostname, { ...options, family: 4 }, callback);
       },
+      rejectUnauthorized: !isDev,
     },
   })
 );
