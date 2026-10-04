@@ -1,0 +1,45 @@
+{
+  "name": "medinexus-server",
+  "version": "1.0.0",
+  "description": "mediNexus backend API server",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "nodemon --exec tsx src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "seed:medicines": "tsx src/db/seedMedicines.ts",
+    "seed:demo": "tsx src/db/seedDemo.ts",
+    "lint": "eslint src/"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.49.1",
+    "@types/node-cron": "^3.0.11",
+    "adm-zip": "^0.5.16",
+    "cookie-parser": "^1.4.7",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "groq-sdk": "^1.1.2",
+    "helmet": "^8.0.0",
+    "multer": "^2.1.1",
+    "node-cron": "^4.2.1",
+    "pdf-parse": "^1.1.4",
+    "twilio": "^5.13.1",
+    "undici": "^8.11.2",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/adm-zip": "^0.5.7",
+    "@types/cookie-parser": "^1.4.10",
+    "@types/cors": "^2.8.17",
+    "@types/express": "^5.0.0",
+    "@types/multer": "^2.1.0",
+    "@types/node": "^22.10.0",
+    "@types/pdf-parse": "^1.1.5",
+    "@types/pg": "^8.18.0",
+    "nodemon": "^3.1.14",
+    "pg": "^8.20.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  }
+}
