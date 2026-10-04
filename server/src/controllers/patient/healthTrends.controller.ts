@@ -3,6 +3,7 @@ import { supabaseAdmin } from "../../config/supabase.js";
 import { requirePatient } from "../../utils/lookup.js";
 import { sendSuccess } from "../../utils/response.js";
 import { AppError, BadRequestError } from "../../utils/errors.js";
+import { getAiCompletion } from "../../utils/aiCompletion.js";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -41,17 +42,11 @@ interface AnalysedReport {
   analysisText: string;
 }
 
-// ─── OpenRouter trend analysis ────────────────────────────────────────────────
+// ─── Trend analysis ──────────────────────────────────────────────────────────
 
 async function generateTrends(
   reports: AnalysedReport[],
 ): Promise<TrendsResult> {
-  const apiKey = process.env.OPENROUTER_API_KEY;
-  if (!apiKey) throw new AppError("OpenRouter API key not configured", 503);
-
-  // Build the report block — include the doc_type label so the model
-  // knows whether it is looking at a lab result, an MRI description, an ECG
-  // summary, etc., and can apply the correct clinical lens.
   const reportsBlock = reports
     .map(
       (r, i) =>
@@ -86,7 +81,7 @@ async function generateTrends(
     "  ]\n" +
     "}\n\n" +
     "Rules:\n" +
-    "- Only include parameters or findings that appear in at least 2 reports with observable changes or consistent mentions.\n" +
+    "- Prioritize parameters or findings that appear across multiple reports. If reports cover distinct modalities or organ systems, include key clinical parameters (e.g. Cardiac rhythm, Pulmonary status, Lipid profile, Complete blood count, Neurological imaging) indicating whether they are stable, improving, or require monitoring.\n" +
     '- "urgent" concern = clinically dangerous trend requiring immediate attention.\n' +
     '- "watch" concern = abnormal or worsening but not immediately dangerous — worth monitoring.\n' +
     '- "none" concern = improving or holding within a healthy/normal range.\n' +
@@ -95,37 +90,18 @@ async function generateTrends(
     '- Speak directly to the patient using "your" in the summary and trend notes.\n' +
     "- If only one type of report is present (e.g. all ECGs), focus entirely on that modality's relevant findings.";
 
-  const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-      "HTTP-Referer": "https://medinexus.app",
-      "X-Title": "mediNexus Health Trend Analysis",
-    },
-    body: JSON.stringify({
-      model: process.env.OPENROUTER_MODEL || "google/gemma-4-31b-it:free",
-      messages: [
-        { role: "system", content: systemPrompt },
-        {
-          role: "user",
-          content: `Analyse these ${reports.length} medical reports in chronological order and identify health trends:\n\n${reportsBlock}`,
-        },
-      ],
-      reasoning: { enabled: true },
-      temperature: 0.2,
-      max_tokens: 1100,
-    }),
+  const raw = await getAiCompletion({
+    messages: [
+      { role: "system", content: systemPrompt },
+      {
+        role: "user",
+        content: `Analyse these ${reports.length} medical reports in chronological order and identify health trends:\n\n${reportsBlock}`,
+      },
+    ],
+    temperature: 0.1,
+    maxTokens: 1200,
+    jsonMode: true,
   });
-
-  if (!res.ok) {
-    const errText = await res.text();
-    console.error("[healthTrends] OpenRouter error:", errText);
-    throw new AppError("AI trend analysis service returned an error", 502);
-  }
-
-  const data = (await res.json()) as any;
-  const raw: string = data?.choices?.[0]?.message?.content?.trim() ?? "";
 
   let jsonStr = raw;
   // Robust JSON extraction: find first '{' and last '}'

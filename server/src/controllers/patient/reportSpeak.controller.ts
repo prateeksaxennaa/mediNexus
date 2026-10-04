@@ -13,6 +13,7 @@ import {
   NotFoundError,
 } from "../../utils/errors.js";
 import { env } from "../../config/env.js";
+import { getAiCompletion } from "../../utils/aiCompletion.js";
 
 // ─── Clients ────────────────────────────────────────────────────────────
 
@@ -233,7 +234,7 @@ async function analyseImageWithGroq(
   }
 }
 
-// ─── Text-based report analyser — Trinity via OpenRouter ─────────────────────
+// ─── Text-based report analyser ─────────────────────────────────────────────
 // Handles: report | default (PDF with extractable text)
 
 async function analyseTextWithTrinity(
@@ -242,48 +243,27 @@ async function analyseTextWithTrinity(
   docType: DocumentType,
   lang: Lang,
 ): Promise<string> {
-  const apiKey = env.OPENROUTER_API_KEY.trim();
   const systemPrompt =
     lang === "hi" ? SYSTEM_PROMPTS_HI[docType] : SYSTEM_PROMPTS_EN[docType];
 
   // Truncate to stay within token limits (~6 000 chars ≈ ~1 500 tokens)
   const truncated = extractedText.slice(0, 6000);
 
-  console.log(`[reportSpeak] Calling Trinity for text-based report (${docType})`);
+  console.log(`[reportSpeak] Calling AI completion for text-based report (${docType})`);
 
-  const res : any = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-      "HTTP-Referer": "https://medinexus.app",
-      "X-Title": "mediNexus Report Audio Analysis",
-    },
-    body: JSON.stringify({
-      model: process.env.OPENROUTER_MODEL || "google/gemma-4-31b-it:free",
-      messages: [
-        { role: "system" as const, content: systemPrompt },
-        {
-          role: "user" as const,
-          content: `Report name: ${reportName}\n\nFull report content:\n${truncated}`,
-        },
-      ],
-      temperature: 0.3,
-      max_tokens: 600,
-    }),
+  const reply = await getAiCompletion({
+    messages: [
+      { role: "system", content: systemPrompt },
+      {
+        role: "user",
+        content: `Report name: ${reportName}\n\nFull report content:\n${truncated}`,
+      },
+    ],
+    temperature: 0.3,
+    maxTokens: 600,
   });
 
-  if (!res.ok) {
-    const errText = await res.text();
-    console.error("[reportSpeak] Trinity error:", errText);
-    throw new AppError("AI analysis service returned an error", 502);
-  }
-
-  const data = (await res.json()) as any;
-  const reply: string =
-    data?.choices?.[0]?.message?.content?.trim() ??
-    "Analysis could not be generated. Please try again.";
-  console.log("[reportSpeak] Trinity reply:", reply.slice(0, 120), "...");
+  console.log("[reportSpeak] Reply:", reply.slice(0, 120), "...");
   return reply;
 }
 

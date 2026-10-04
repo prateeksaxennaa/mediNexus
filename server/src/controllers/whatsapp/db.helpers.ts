@@ -10,6 +10,7 @@ import { env } from "../../config/env.js";
 import { Groq } from "groq-sdk";
 import pdfParseLib from "pdf-parse";
 const pdfParse = pdfParseLib as unknown as (buf: Buffer) => Promise<{ text: string }>;
+import { getAiCompletion } from "../../utils/aiCompletion.js";
 
 // ─── Groq client (shared) ─────────────────────────────────────────────────────
 
@@ -591,26 +592,19 @@ async function extractPdfText(url: string): Promise<string> {
 
 async function analyseTextTrinity(text: string, reportName: string, docType: DocumentType, lang: Lang): Promise<string> {
   const sys = lang === "hi" ? SYS_HI[docType] : SYS_EN[docType];
-  const r: any = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${env.OPENROUTER_API_KEY.trim()}`,
-      "Content-Type": "application/json",
-      "HTTP-Referer": "https://medinexus.app",
-      "X-Title": "mediNexus WhatsApp Bot",
-    },
-    body: JSON.stringify({
-      model: env.OPENROUTER_MODEL || "google/gemma-4-31b-it:free",
+  try {
+    return await getAiCompletion({
       messages: [
         { role: "system", content: sys },
         { role: "user", content: `Report: ${reportName}\n\n${text.slice(0, 6000)}` },
       ],
       temperature: 0.3,
-      max_tokens: 600,
-    }),
-  });
-  const data = await r.json();
-  return data?.choices?.[0]?.message?.content?.trim() ?? "";
+      maxTokens: 600,
+    });
+  } catch (err: any) {
+    console.error("[whatsapp] analyseText error:", err?.message || err);
+    return "";
+  }
 }
 
 async function callTTS(text: string, lang: Lang): Promise<{ audioBase64: string; audioMime: string }> {
@@ -856,32 +850,21 @@ export async function getHealthTrends(patientId: string): Promise<TrendsResult |
   if (analysed.split("---").length - 1 < 2) return null;
 
   try {
-    const res: any = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${env.OPENROUTER_API_KEY.trim()}`,
-        "Content-Type": "application/json",
-        "HTTP-Referer": "https://medinexus.app",
-        "X-Title": "mediNexus WhatsApp Trends",
-      },
-      body: JSON.stringify({
-        model: env.OPENROUTER_MODEL || "google/gemma-4-31b-it:free",
-        messages: [
-          {
-            role: "system",
-            content: `You are a clinical AI. Analyse these patient report summaries and identify health trends across them. 
+    const raw = await getAiCompletion({
+      messages: [
+        {
+          role: "system",
+          content: `You are a clinical AI. Analyse these patient report summaries and identify health trends across them. 
 Return ONLY valid JSON: {"summary":"2-4 sentence overview","trends":[{"parameter":"full name","direction":"improving|declining|stable|variable","concern":"none|watch|urgent","note":"1-2 sentences"}]}
 Max 6 trend items. Only include findings across 2+ reports. No markdown outside JSON.`,
-          },
-          { role: "user", content: `Analyse these reports:\n\n${analysed}` },
-        ],
-        temperature: 0.2,
-        max_tokens: 900,
-      }),
+        },
+        { role: "user", content: `Analyse these reports:\n\n${analysed}` },
+      ],
+      temperature: 0.2,
+      max_tokens: 900,
+      jsonMode: true,
     });
 
-    const data = await res.json();
-    const raw: string = data?.choices?.[0]?.message?.content?.trim() ?? "";
     const start = raw.indexOf("{");
     const end = raw.lastIndexOf("}");
     if (start === -1 || end === -1) return null;

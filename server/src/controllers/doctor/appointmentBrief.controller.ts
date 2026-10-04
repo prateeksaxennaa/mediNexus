@@ -3,6 +3,7 @@ import { supabaseAdmin } from "../../config/supabase.js";
 import { requireDoctor } from "../../utils/lookup.js";
 import { sendSuccess } from "../../utils/response.js";
 import { AppError, NotFoundError } from "../../utils/errors.js";
+import { getAiCompletion } from "../../utils/aiCompletion.js";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -43,8 +44,6 @@ async function generateBrief(context: {
   prescriptions: any[];
   reports: any[];
 }): Promise<AppointmentBrief> {
-  const apiKey = process.env.OPENROUTER_API_KEY;
-  if (!apiKey) throw new AppError("OpenRouter API key not configured", 503);
 
   // Build a concise context block — keep tokens lean
   const rxSummary = context.prescriptions
@@ -102,37 +101,18 @@ async function generateBrief(context: {
     "- Keep each array item concise (under 15 words).\n" +
     "- Narrative must be plain English, no bullet points inside it.";
 
-  const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-      "HTTP-Referer": "https://medinexus.app",
-      "X-Title": "mediNexus Pre-Appointment Brief",
-    },
-    body: JSON.stringify({
-      model: process.env.OPENROUTER_MODEL || "google/gemma-4-31b-it:free",
-      messages: [
-        { role: "system", content: systemPrompt },
-        {
-          role: "user",
-          content: `Generate the pre-appointment brief for this patient:\n\n${contextBlock}`,
-        },
-      ],
-      reasoning: { enabled: true },
-      temperature: 0.2,
-      max_tokens: 700,
-    }),
+  const raw = await getAiCompletion({
+    messages: [
+      { role: "system", content: systemPrompt },
+      {
+        role: "user",
+        content: `Generate the pre-appointment brief for this patient:\n\n${contextBlock}`,
+      },
+    ],
+    temperature: 0.2,
+    maxTokens: 700,
+    jsonMode: true,
   });
-
-  if (!res.ok) {
-    const errText = await res.text();
-    console.error("[appointmentBrief] OpenRouter error:", errText);
-    throw new AppError("AI brief generation service returned an error", 502);
-  }
-
-  const data = (await res.json()) as any;
-  const raw: string = data?.choices?.[0]?.message?.content?.trim() ?? "";
 
   let jsonStr = raw;
   const startIndex = raw.indexOf("{");

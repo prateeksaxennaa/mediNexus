@@ -7,6 +7,7 @@ import {
   BadRequestError,
 } from "../../utils/errors.js";
 import { requireDoctor } from "../../utils/lookup.js";
+import { getAiCompletion } from "../../utils/aiCompletion.js";
 
 // ─── Types ───────────────────────────────────────────────────────────
 
@@ -77,10 +78,6 @@ export async function getAIInsights(
       throw new BadRequestError("illnessDescription is required");
     }
 
-    const apiKey = process.env.OPENROUTER_API_KEY;
-    if (!apiKey) {
-      throw new AppError("AI service is not configured", 503);
-    }
 
     // ── 1. Fetch full details for medicines already on the Rx ────────────────
     let currentMedicines: {
@@ -274,40 +271,16 @@ Rules:
 - Never invent medicine names. Only use names from the population data or well-known clinical knowledge.
 - Keep all text brief and clinical.`;
 
-    // ── 4. Call OpenRouter with arcee-ai/trinity-large-preview:free ─────────
-    const openRouterRes = await fetch(
-      "https://openrouter.ai/api/v1/chat/completions",
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          "Content-Type": "application/json",
-          "HTTP-Referer": "https://medinexus.app",
-          "X-Title": "mediNexus Clinical Decision Support",
-        },
-        body: JSON.stringify({
-          model: process.env.OPENROUTER_MODEL || "google/gemma-4-31b-it:free",
-          messages: [
-            { role: "system", content: systemPrompt },
-            { role: "user", content: userPrompt },
-          ],
-          reasoning: { enabled: true },
-          response_format: { type: "json_object" },
-          temperature: 0.2,
-          max_tokens: 1200,
-        }),
-      },
-    );
-
-    if (!openRouterRes.ok) {
-      const errText = await openRouterRes.text();
-      console.error("[getAIInsights] OpenRouter error:", errText);
-      throw new AppError("AI service returned an error", 502);
-    }
-
-    const openRouterData = (await openRouterRes.json()) as any;
-    const rawContent: string =
-      openRouterData?.choices?.[0]?.message?.content ?? "{}";
+    // ── 4. Call AI Completion ──────────────────────────────────────────────
+    const rawContent = await getAiCompletion({
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt },
+      ],
+      temperature: 0.2,
+      maxTokens: 1200,
+      jsonMode: true,
+    });
 
     let insights: AIInsightsResponse;
     try {

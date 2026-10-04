@@ -3,6 +3,7 @@ import { supabaseAdmin } from "../../config/supabase.js";
 import { sendSuccess } from "../../utils/response.js";
 import { AppError, BadRequestError } from "../../utils/errors.js";
 import { requirePatient } from "../../utils/lookup.js";
+import { getAiCompletion } from "../../utils/aiCompletion.js";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -204,8 +205,6 @@ export async function patientAIChat(
       throw new BadRequestError("message must be 1000 characters or less");
     }
 
-    const apiKey = process.env.OPENROUTER_API_KEY;
-    if (!apiKey) throw new AppError("AI service is not configured", 503);
 
     // ── 1. Fetch all patient health data in parallel ─────────────────────────
     const [prescriptionsRes, reportsRes, referralsRes] = await Promise.all([
@@ -396,37 +395,12 @@ export async function patientAIChat(
       { role: "user" as const, content: message.trim() },
     ];
 
-    // ── 7. Call OpenRouter ───────────────────────────────────────────────────
-    const openRouterRes = await fetch(
-      "https://openrouter.ai/api/v1/chat/completions",
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          "Content-Type": "application/json",
-          "HTTP-Referer": "https://medinexus.app",
-          "X-Title": "mediNexus Patient Health Assistant",
-        },
-        body: JSON.stringify({
-          model: process.env.OPENROUTER_MODEL || "google/gemma-4-31b-it:free",
-          messages,
-          reasoning: { enabled: true },
-          temperature: 0.3,
-          max_tokens: 800,
-        }),
-      },
-    );
-
-    if (!openRouterRes.ok) {
-      const errText = await openRouterRes.text();
-      console.error("[patientAIChat] OpenRouter error:", errText);
-      throw new AppError("AI service returned an error", 502);
-    }
-
-    const openRouterData = (await openRouterRes.json()) as any;
-    const reply: string =
-      openRouterData?.choices?.[0]?.message?.content?.trim() ??
-      "I was unable to generate a response. Please try again.";
+    // ── 7. Call AI Completion ───────────────────────────────────────────────
+    const reply = await getAiCompletion({
+      messages,
+      temperature: 0.3,
+      maxTokens: 800,
+    });
 
     sendSuccess(res, { reply }, "AI response generated");
   } catch (err) {
