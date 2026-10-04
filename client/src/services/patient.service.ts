@@ -401,7 +401,7 @@ export const patientService = {
   getAccessAlerts: (params: { limit?: number; offset?: number; unread_only?: boolean } = {}) => {
     const qs = new URLSearchParams(
       Object.entries(params)
-        .filter(([, v]) => v !== undefined && v !== null && v !== '')
+        .filter(([, v]) => v !== undefined && v !== null)
         .map(([k, v]) => [k, String(v)])
     ).toString();
 

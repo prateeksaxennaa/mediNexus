@@ -24,8 +24,6 @@ import {
   Calendar,
   ArrowRight,
   Play,
-  Pause,
-  Download,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -129,7 +127,9 @@ export const PatientHealthPassport = () => {
   // Per-report language selection; audio is cached per `${reportId}:${lang}`
   const [reportLangs, setReportLangs] = useState<Record<string, 'en' | 'hi'>>({});
   const reportAudioRefs = useRef<Record<string, HTMLAudioElement>>({});
-  const [audioProgress, setAudioProgress] = useState<Record<string, { currentTime: number, duration: number }>>({});
+  const speechUtteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
+  const speechReportIdRef = useRef<string | null>(null);
+  const [audioProgress, setAudioProgress] = useState<Record<string, { currentTime: number; duration: number }>>({});
 
   const formatTime = (seconds: number) => {
     if (isNaN(seconds)) return '0:00';
@@ -143,6 +143,66 @@ export const PatientHealthPassport = () => {
   const setSpeakState = (reportId: string, state: SpeakState) =>
     setReportSpeakStates((prev) => ({ ...prev, [reportId]: state }));
 
+  const stopAllAudio = () => {
+    Object.values(reportAudioRefs.current).forEach((audio) => {
+      try {
+        if (!audio.paused) audio.pause();
+      } catch {}
+    });
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+      try {
+        window.speechSynthesis.cancel();
+      } catch {}
+    }
+  };
+
+  const playSpeechSynthesisFallback = (reportId: string, text: string, lang: 'en' | 'hi') => {
+    if (typeof window === 'undefined' || !('speechSynthesis' in window)) {
+      setSpeakState(reportId, 'error');
+      toast.error('Audio playback not supported in this browser.');
+      return;
+    }
+    try {
+      window.speechSynthesis.cancel();
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.lang = lang === 'hi' ? 'hi-IN' : 'en-US';
+      utterance.rate = 0.95;
+
+      const voices = window.speechSynthesis.getVoices();
+      const matchedVoice = voices.find((v) =>
+        lang === 'hi' ? v.lang.startsWith('hi') : v.lang.startsWith('en'),
+      );
+      if (matchedVoice) utterance.voice = matchedVoice;
+
+      utterance.onstart = () => {
+        setSpeakState(reportId, 'playing');
+        speechReportIdRef.current = reportId;
+        setAudioProgress((prev) => ({
+          ...prev,
+          [reportId]: { currentTime: 0, duration: Math.max(10, Math.round(text.length / 14)) },
+        }));
+      };
+
+      utterance.onend = () => {
+        setSpeakState(reportId, 'idle');
+        speechReportIdRef.current = null;
+      };
+
+      utterance.onerror = (err) => {
+        console.warn('[speechSynthesis] Error:', err);
+        setSpeakState(reportId, 'idle');
+        speechReportIdRef.current = null;
+      };
+
+      speechUtteranceRef.current = utterance;
+      window.speechSynthesis.speak(utterance);
+    } catch (e: any) {
+      console.error('[speechSynthesis] Fallback failed:', e);
+      setSpeakState(reportId, 'error');
+      toast.error('Failed to play speech');
+    }
+  };
+
   const handleAudioSeek = (e: React.MouseEvent<HTMLDivElement>, reportId: string, lang: 'en' | 'hi') => {
     const rect = e.currentTarget.getBoundingClientRect();
     const percent = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
@@ -150,7 +210,10 @@ export const PatientHealthPassport = () => {
     const audio = reportAudioRefs.current[audioKey];
     if (audio && audio.duration) {
       audio.currentTime = percent * audio.duration;
-      setAudioProgress(prev => ({ ...prev, [reportId]: { ...prev[reportId], currentTime: audio.currentTime }}));
+      setAudioProgress((prev) => ({
+        ...prev,
+        [reportId]: { ...prev[reportId], currentTime: audio.currentTime },
+      }));
     }
   };
 
@@ -158,18 +221,45 @@ export const PatientHealthPassport = () => {
     const current = reportSpeakStates[reportId] ?? 'idle';
     const audioKey = `${reportId}:${lang}`;
 
-    // If audio already loaded for this lang — toggle play/pause
+    // 1. If currently using speech synthesis for this report:
+    if (speechReportIdRef.current === reportId && typeof window !== 'undefined' && 'speechSynthesis' in window) {
+      if (window.speechSynthesis.speaking) {
+        if (window.speechSynthesis.paused) {
+          window.speechSynthesis.resume();
+          setSpeakState(reportId, 'playing');
+        } else {
+          window.speechSynthesis.pause();
+          setSpeakState(reportId, 'paused');
+        }
+        return;
+      }
+    }
+
+    // 2. If audio element already exists for this lang — toggle play/pause
     const existing = reportAudioRefs.current[audioKey];
     if (existing && (current === 'playing' || current === 'paused')) {
       if (current === 'playing') {
         existing.pause();
         setSpeakState(reportId, 'paused');
       } else {
-        existing.play();
-        setSpeakState(reportId, 'playing');
+        stopAllAudio();
+        try {
+          await existing.play();
+          setSpeakState(reportId, 'playing');
+        } catch (e: any) {
+          console.warn('[handleSpeakReport] Resume play error:', e);
+        }
       }
       return;
     }
+
+    // Stop anything else currently playing
+    stopAllAudio();
+    Object.keys(reportSpeakStates).forEach((id) => {
+      if (reportSpeakStates[id] === 'playing' || reportSpeakStates[id] === 'paused') {
+        setSpeakState(id, 'idle');
+      }
+    });
 
     // Otherwise: fetch from server
     setSpeakState(reportId, 'loading');
@@ -177,25 +267,61 @@ export const PatientHealthPassport = () => {
       const res = await patientService.speakReport(reportId, lang);
       const audioBase64 = res.data?.audio_base64;
       const audioMime = res.data?.audio_mime ?? 'audio/mpeg';
-      if (!audioBase64) throw new Error('No audio received');
+      const analysisText = res.data?.analysis_text;
 
-      const audio = new Audio(`data:${audioMime};base64,${audioBase64}`);
-      reportAudioRefs.current[audioKey] = audio;
+      const isValidBase64Audio =
+        audioBase64 &&
+        typeof audioBase64 === 'string' &&
+        audioBase64.length > 500 &&
+        !audioBase64.startsWith('SUQzBAAAAAAAI1');
 
-      audio.onended = () => setSpeakState(reportId, 'idle');
-      audio.onpause = () => {
-        if (!audio.ended) setSpeakState(reportId, 'paused');
-      };
-      audio.onplay = () => setSpeakState(reportId, 'playing');
+      if (isValidBase64Audio) {
+        try {
+          const audio = new Audio(`data:${audioMime};base64,${audioBase64}`);
+          reportAudioRefs.current[audioKey] = audio;
 
-      audio.ontimeupdate = () => {
-        setAudioProgress(prev => ({ ...prev, [reportId]: { currentTime: audio.currentTime, duration: audio.duration } }));
-      };
-      audio.onloadedmetadata = () => {
-        setAudioProgress(prev => ({ ...prev, [reportId]: { currentTime: 0, duration: audio.duration } }));
-      };
+          audio.onended = () => setSpeakState(reportId, 'idle');
+          audio.onpause = () => {
+            if (!audio.ended) setSpeakState(reportId, 'paused');
+          };
+          audio.onplay = () => setSpeakState(reportId, 'playing');
 
-      await audio.play();
+          audio.ontimeupdate = () => {
+            setAudioProgress((prev) => ({
+              ...prev,
+              [reportId]: { currentTime: audio.currentTime, duration: audio.duration },
+            }));
+          };
+          audio.onloadedmetadata = () => {
+            setAudioProgress((prev) => ({
+              ...prev,
+              [reportId]: { currentTime: 0, duration: audio.duration },
+            }));
+          };
+          audio.onerror = () => {
+            if (analysisText) {
+              playSpeechSynthesisFallback(reportId, analysisText, lang);
+            }
+          };
+
+          await audio.play();
+          return;
+        } catch (audioPlayErr) {
+          console.warn('[handleSpeakReport] Audio element play failed, falling back to speech synthesis:', audioPlayErr);
+          if (analysisText) {
+            playSpeechSynthesisFallback(reportId, analysisText, lang);
+            return;
+          }
+        }
+      }
+
+      // If no valid base64 audio or audio.play() threw, use browser speech synthesis
+      if (analysisText) {
+        playSpeechSynthesisFallback(reportId, analysisText, lang);
+        return;
+      }
+
+      throw new Error('No audio or report interpretation received');
     } catch (e: any) {
       toast.error(e.message ?? 'Failed to generate audio');
       setSpeakState(reportId, 'error');
@@ -507,8 +633,6 @@ export const PatientHealthPassport = () => {
                   </div>
                 </div>
               )}
-
-              {/* ── Reports ── */}
               {tab === 'reports' && (
                 <div className="flex flex-col h-full animate-in fade-in slide-in-from-bottom-4 duration-500">
                   <div className="flex items-center justify-between mb-8">
@@ -519,154 +643,202 @@ export const PatientHealthPassport = () => {
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-1 gap-6 max-w-5xl">
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
                     {(passport?.reports ?? []).length === 0 ? (
-                      <div className="col-span-full bg-card rounded-3xl border border-border p-12 text-center text-muted-foreground">No reports found.</div>
+                      <div className="col-span-full bg-card rounded-3xl border border-border p-12 text-center text-muted-foreground">
+                        No reports found.
+                      </div>
                     ) : (
                       (passport?.reports ?? []).map((report) => {
                         const speakState = reportSpeakStates[report.id] ?? 'idle';
                         const isLoading = speakState === 'loading';
                         const isPlaying = speakState === 'playing';
+                        const isPaused = speakState === 'paused';
                         const isError = speakState === 'error';
                         const lang = reportLangs[report.id] ?? 'en';
+                        const categoryLabel = (report.report_category ?? report.report_type ?? 'Report').toUpperCase();
 
                         return (
-                        <div key={report.id} className="bg-card rounded-3xl border border-border p-2 flex flex-col hover:border-primary/30 transition-colors group">
-                          <div className="flex flex-col sm:flex-row gap-4 h-full">
-                            {/* Left Text Box */}
-                            <div className="flex-1 flex flex-col p-6 pr-2">
-                               {/* Icon & Title */}
-                               <div className="flex items-start gap-4 mb-4">
-                                  <div className="h-12 w-12 rounded-full bg-primary/10 border border-primary/20 flex items-center justify-center shrink-0">
-                                      <FileText className="h-5 w-5 text-primary" />
-                                  </div>
-                                  <div>
-                                    <h3 className="text-xl font-bold text-foreground leading-tight">{report.report_name}</h3>
-                                    <p className="text-sm text-muted-foreground mt-1">{report.hospitals?.name ?? 'External Lab'}</p>
-                                  </div>
-                               </div>
-
-                               <p className="text-sm text-muted-foreground leading-relaxed mb-6 line-clamp-4">
-                                 This comprehensive {report.report_type?.toLowerCase() || 'medical'} evaluation provides a detailed baseline. Includes complete analysis and comparative studies with previous records.
-                               </p>
-
-                               {/* Tags */}
-                               <div className="flex flex-wrap items-center gap-3 mb-6">
-                                  <div className="bg-muted rounded-2xl px-4 py-2 border border-border flex flex-col items-start gap-1">
-                                    <span className="text-[10px] uppercase font-bold text-muted-foreground tracking-wider">Status</span>
-                                    <span className="text-sm font-semibold text-rose-500 dark:text-rose-400">Stable</span>
-                                  </div>
-                                  <div className="bg-muted rounded-2xl px-4 py-2 border border-border flex flex-col items-start gap-1">
-                                    <span className="text-[10px] uppercase font-bold text-muted-foreground tracking-wider">Uploaded</span>
-                                    <span className="text-sm font-semibold text-foreground">{format(parseISO(report.uploaded_at), 'MMM d, yyyy')}</span>
-                                  </div>
-                               </div>
-
-                               {/* Buttons container pushed to bottom */}
-                               <div className="mt-auto pt-2 flex items-center gap-3">
-                                 <button
-                                   onClick={() => handleSpeakReport(report.id, lang)}
-                                   disabled={isLoading}
-                                   className={`px-6 py-3 rounded-[20px] text-sm font-bold transition-all flex items-center gap-2 ${
-                                     isError
-                                       ? 'bg-red-500/20 text-red-500 hover:bg-red-500/30'
-                                       : isPlaying
-                                       ? 'bg-primary/20 text-primary hover:bg-primary/30'
-                                       : 'bg-primary text-primary-foreground hover:bg-primary/90'
-                                   } disabled:opacity-50`}
-                                 >
-                                   <div className="h-4 w-4 bg-primary-foreground dark:bg-background rounded shrink-0 flex items-center justify-center">
-                                      {isLoading ? <Loader2 className="h-3 w-3 animate-spin text-primary" /> : <div className="w-1.5 h-1.5 bg-primary rounded-sm" />}
-                                   </div>
-                                   {isLoading ? 'Loading...' : isPlaying ? 'Pause Audio' : isError ? 'Retry' : 'Full Analysis'}
-                                 </button>
-                                 <a
-                                   href={report.report_url}
-                                   target="_blank"
-                                   rel="noopener noreferrer"
-                                   className="px-6 py-3 bg-muted hover:bg-muted/80 text-foreground border border-border rounded-[20px] flex items-center gap-2 text-sm font-bold transition-all"
-                                 >
-                                   <Download className="h-4 w-4" /> PDF
-                                 </a>
-                               </div>
+                          <div
+                            key={report.id}
+                            className="bg-card rounded-[24px] border border-border p-6 flex flex-col justify-between hover:border-primary/30 transition-all group"
+                          >
+                            {/* Header / Badges */}
+                            <div className="flex items-start justify-between mb-5">
+                              <div className="h-12 w-12 rounded-full bg-primary/10 border border-primary/20 flex items-center justify-center shrink-0">
+                                <FileText className="h-5 w-5 text-primary" />
+                              </div>
+                              <span className="bg-muted text-primary text-[10px] uppercase font-bold tracking-widest px-3 py-1 rounded-full border border-border">
+                                {categoryLabel}
+                              </span>
                             </div>
-                            
-                            {/* Right Image Container - Trigger for modal */}
-                            <button
-                              onClick={() => setReportPreviewUrl(report.report_url)} 
-                              className="w-full sm:w-[350px] shrink-0 rounded-[20px] overflow-hidden bg-muted/30 border border-border flex items-center justify-center relative min-h-[240px] group/preview cursor-pointer"
-                            >
-                               {/* Preview the image securely using an img tag for known images or object for unknown/pdfs */}
-                               {report.report_url.toLowerCase().match(/\.(jpg|jpeg|png|gif|webp)$/) ? (
-                                  <img src={report.report_url} className="absolute inset-0 w-full h-full object-cover opacity-90 group-hover/preview:opacity-100 transition-opacity" />
-                               ) : (
-                                  <iframe 
-                                    src={`${report.report_url}#toolbar=0&navpanes=0&scrollbar=0`} 
-                                    className="absolute inset-0 w-full h-full border-0 pointer-events-none opacity-90 group-hover/preview:opacity-100 transition-opacity" 
-                                    scrolling="no"
-                                  />
-                               )}
-                               <div className="absolute inset-0 shadow-[inset_0_0_20px_rgba(0,0,0,0.1)] dark:shadow-[inset_0_0_20px_rgba(0,0,0,0.8)] pointer-events-none rounded-[20px]" />
-                               
-                               {/* Hover Overlay */}
-                               <div className="absolute inset-0 bg-background/50 opacity-0 group-hover/preview:opacity-100 transition-opacity flex items-center justify-center backdrop-blur-sm">
-                                  <div className="bg-primary/20 text-primary px-4 py-2 rounded-full font-bold text-sm flex items-center gap-2">
-                                     <Eye className="h-4 w-4" /> View Fullscreen
-                                  </div>
-                               </div>
-                            </button>
-                          </div>
 
-                          {/* Audio Player Bar - full width at bottom if it's playing/paused/loading */}
-                          {(isPlaying || speakState === 'paused' || isLoading) && (
-                            <div className="mt-4 bg-muted/30 rounded-[24px] p-5 flex items-center justify-center gap-5 border border-border relative">
-                                {/* Top Controls - Just Play/Pause */}
-                                <div className="flex items-center justify-center">
-                                   <button 
-                                      onClick={() => handleSpeakReport(report.id, lang)}
-                                      className="h-10 w-10 bg-background hover:bg-muted border border-border text-foreground rounded-full flex items-center justify-center shadow-sm transition-transform hover:scale-105 active:scale-95 shrink-0"
-                                   >
-                                     {isLoading ? (
-                                        <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
-                                     ) : isPlaying ? (
-                                        <Pause className="h-5 w-5 fill-current" />
-                                     ) : (
-                                        <Play className="h-5 w-5 fill-current ml-1" />
-                                     )}
-                                   </button>
-                                </div>
+                            {/* Info Blocks */}
+                            <div className="mb-5">
+                              <h3 className="text-lg font-bold text-foreground leading-tight mb-1">
+                                {report.report_name}
+                              </h3>
+                              <p className="text-xs text-muted-foreground mb-3">
+                                {(report as any).hospitals?.name ?? 'External Lab'}
+                              </p>
 
-                                {/* Scrubber */}
-                                <div className="flex-1 flex items-center gap-3">
-                                  <span className="text-[12px] font-semibold text-primary w-8 text-right font-mono tracking-tighter shrink-0">
+                              <div className="flex items-center gap-4 text-[11px] text-muted-foreground font-medium">
+                                <span className="flex items-center gap-1.5">
+                                  <Calendar className="h-3.5 w-3.5" />
+                                  {format(parseISO(report.uploaded_at), 'MMM d, yyyy')}
+                                </span>
+                                <span className="flex items-center gap-1.5">
+                                  <FileText className="h-3.5 w-3.5" /> PDF
+                                </span>
+                              </div>
+                            </div>
+
+                            {/* Controls */}
+                            <div className="pt-4 border-t border-border mt-auto space-y-3">
+                              {/* Language toggle row */}
+                              <div className="flex items-center justify-center rounded-xl bg-muted/60 border border-border p-1 w-full text-xs">
+                                {(['en', 'hi'] as const).map((l) => (
+                                  <button
+                                    key={l}
+                                    onClick={() => {
+                                      if (l === lang) return;
+                                      const audioKey = `${report.id}:${lang}`;
+                                      const existing = reportAudioRefs.current[audioKey];
+                                      if (existing) {
+                                        existing.pause();
+                                        existing.currentTime = 0;
+                                      }
+                                      if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+                                        window.speechSynthesis.cancel();
+                                      }
+                                      setSpeakState(report.id, 'idle');
+                                      setReportLangs((prev) => ({ ...prev, [report.id]: l }));
+                                    }}
+                                    disabled={isLoading}
+                                    className={`flex-1 py-1.5 font-bold rounded-lg transition-all ${
+                                      lang === l
+                                        ? 'bg-primary/15 text-primary shadow-sm'
+                                        : 'text-muted-foreground hover:text-foreground'
+                                    } disabled:opacity-50`}
+                                  >
+                                    {l === 'en' ? 'English (EN)' : 'Hindi (HI)'}
+                                  </button>
+                                ))}
+                              </div>
+
+                              {/* Action buttons */}
+                              <div className="flex gap-2.5">
+                                <button
+                                  onClick={() => handleSpeakReport(report.id, lang)}
+                                  disabled={isLoading}
+                                  className={`flex-1 rounded-full py-2.5 px-4 text-xs font-bold transition-all flex items-center justify-center gap-2 ${
+                                    isError
+                                      ? 'border border-red-500/30 text-red-500 bg-red-500/10 hover:bg-red-500/20'
+                                      : isPlaying
+                                      ? 'border border-primary/40 text-primary bg-primary/15 shadow-sm'
+                                      : isPaused
+                                      ? 'border border-primary/30 text-primary bg-primary/10'
+                                      : 'bg-muted text-foreground hover:bg-muted/80'
+                                  } disabled:opacity-50`}
+                                >
+                                  {isLoading ? (
+                                    <>
+                                      <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />
+                                      <span>Analysing…</span>
+                                    </>
+                                  ) : isPlaying ? (
+                                    <>
+                                      <span className="flex items-end gap-[2.5px] h-3.5">
+                                        {[0, 1, 2, 3].map((i) => (
+                                          <span
+                                            key={i}
+                                            className="w-[3px] rounded-full bg-primary animate-pulse"
+                                            style={{
+                                              height: `${[80, 100, 60, 90][i]}%`,
+                                              animationDelay: `${i * 0.15}s`,
+                                            }}
+                                          />
+                                        ))}
+                                      </span>
+                                      <span>Pause</span>
+                                    </>
+                                  ) : isPaused ? (
+                                    <>
+                                      <Play className="h-3.5 w-3.5 fill-current" />
+                                      <span>Resume</span>
+                                    </>
+                                  ) : isError ? (
+                                    <>
+                                      <span className="text-red-500">⚠</span>
+                                      <span>Retry</span>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <span className="flex items-end gap-[2px] h-3.5 opacity-70">
+                                        {[2, 4, 3, 5].map((h, i) => (
+                                          <span
+                                            key={i}
+                                            className="w-[2.5px] rounded-full bg-current"
+                                            style={{ height: `${h * 18}%` }}
+                                          />
+                                        ))}
+                                      </span>
+                                      <span>Listen</span>
+                                    </>
+                                  )}
+                                </button>
+
+                                <a
+                                  href={report.report_url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="flex-1 bg-muted hover:bg-muted/80 text-foreground border border-border/50 rounded-full flex justify-center items-center gap-2 text-xs font-bold py-2.5 px-4 transition-all"
+                                >
+                                  <Eye className="h-3.5 w-3.5" />
+                                  <span>View</span>
+                                </a>
+                              </div>
+
+                              {/* Progress scrubber when playing or paused */}
+                              {(isPlaying || isPaused || isLoading) && (
+                                <div className="pt-2 flex items-center gap-2.5">
+                                  <span className="text-[11px] font-mono font-medium text-muted-foreground w-8 text-right">
                                     {isLoading ? '...' : formatTime(audioProgress[report.id]?.currentTime || 0)}
                                   </span>
-                                  
-                                  <div 
-                                    className="flex-1 h-3 flex items-center relative overflow-visible cursor-pointer group/scrubber"
+
+                                  <div
+                                    className="flex-1 h-3 flex items-center relative cursor-pointer group/scrubber"
                                     onClick={(e) => handleAudioSeek(e, report.id, lang)}
                                   >
-                                    <div className="w-full h-1.5 bg-border rounded-full" />
-                                    {isLoading ? (
-                                      <div className="absolute left-0 h-1.5 bg-primary w-full animate-pulse opacity-40 rounded-full pointer-events-none" />
-                                    ) : (
-                                      <div 
-                                        className="absolute left-0 h-1.5 bg-primary rounded-full transition-all duration-100 ease-linear pointer-events-none"
-                                        style={{ width: `${Math.min(100, Math.max(0, ((audioProgress[report.id]?.currentTime || 0) / (audioProgress[report.id]?.duration || 1)) * 100))}%` }}
-                                      >
-                                          {/* Circle indicator */}
-                                          <div className="absolute right-0 top-1/2 -translate-y-1/2 border-[3px] border-background w-3 h-3 bg-primary rounded-full translate-x-1/2 shadow-sm scale-0 group-hover/scrubber:scale-100 transition-transform" />
-                                      </div>
-                                    )}
+                                    <div className="w-full h-1 bg-border rounded-full overflow-hidden">
+                                      {isLoading ? (
+                                        <div className="h-full bg-primary w-full animate-pulse opacity-50" />
+                                      ) : (
+                                        <div
+                                          className="h-full bg-primary transition-all duration-150"
+                                          style={{
+                                            width: `${Math.min(
+                                              100,
+                                              Math.max(
+                                                0,
+                                                ((audioProgress[report.id]?.currentTime || 0) /
+                                                  (audioProgress[report.id]?.duration || 1)) *
+                                                  100,
+                                              ),
+                                            )}%`,
+                                          }}
+                                        />
+                                      )}
+                                    </div>
                                   </div>
-                                  
-                                  <span className="text-[12px] font-semibold text-primary w-8 font-mono tracking-tighter shrink-0">
+
+                                  <span className="text-[11px] font-mono font-medium text-muted-foreground w-8">
                                     {isLoading ? '...' : formatTime(audioProgress[report.id]?.duration || 0)}
                                   </span>
                                 </div>
+                              )}
                             </div>
-                          )}
-                        </div>
+                          </div>
                         );
                       })
                     )}

@@ -803,7 +803,7 @@ export async function runDemoSeed() {
           lang: 'en',
           doc_type: r.type,
           analysis_text: r.analysisEn,
-          audio_base64: dummyAudioBase64,
+          audio_base64: null,
           audio_mime: 'audio/mpeg',
         },
         {
@@ -811,7 +811,7 @@ export async function runDemoSeed() {
           lang: 'hi',
           doc_type: r.type,
           analysis_text: r.analysisHi,
-          audio_base64: dummyAudioBase64,
+          audio_base64: null,
           audio_mime: 'audio/mpeg',
         },
       ], { onConflict: 'report_id,lang,doc_type' });

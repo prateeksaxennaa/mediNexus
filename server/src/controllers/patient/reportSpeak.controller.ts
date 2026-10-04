@@ -427,13 +427,18 @@ export async function reportSpeak(
       .eq("doc_type", docType)
       .maybeSingle();
 
-    if (!cacheErr && cached) {
-      console.log(`[reportSpeak] Cache hit for report ${reportId} (lang=${lang}, docType=${docType})`);
+    const isAudioValid =
+      cached?.audio_base64 &&
+      cached.audio_base64.length > 500 &&
+      !cached.audio_base64.startsWith("SUQzBAAAAAAAI1");
+
+    if (!cacheErr && cached && isAudioValid) {
+      console.log(`[reportSpeak] Cache hit with valid audio for report ${reportId} (lang=${lang}, docType=${docType})`);
       sendSuccess(
         res,
         {
           audio_base64: cached.audio_base64,
-          audio_mime: cached.audio_mime,
+          audio_mime: cached.audio_mime || "audio/mpeg",
           analysis_text: cached.analysis_text,
         },
         "Report audio (cached)",
@@ -441,27 +446,42 @@ export async function reportSpeak(
       return;
     }
 
-    // ── 3. Analyse (LLM) ───────────────────────────────────────────────
-    console.log(
-      `[reportSpeak] Analysing report ${reportId} (type=${docType}, lang=${lang})`,
-    );
-    const analysisText = await analyseReport(
-      report.report_url,
-      report.report_name,
-      docType,
-      lang,
-    );
-    console.log(
-      `[reportSpeak] Analysis complete (${analysisText.length} chars)`,
-    );
+    // ── 3. Analyse (LLM) if not already analysed ───────────────────────
+    let analysisText = cached?.analysis_text;
+    if (!analysisText) {
+      console.log(
+        `[reportSpeak] Analysing report ${reportId} (type=${docType}, lang=${lang})`,
+      );
+      analysisText = await analyseReport(
+        report.report_url,
+        report.report_name,
+        docType,
+        lang,
+      );
+      console.log(
+        `[reportSpeak] Analysis complete (${analysisText.length} chars)`,
+      );
+    }
 
-    // ── 4. TTS ──────────────────────────────────────────────────────────
-    console.log(
-      `[reportSpeak] Generating TTS for report ${reportId} (lang=${lang})`,
-    );
-    const { audioBase64, audioMime } = await textToSpeech(analysisText, lang);
+    // ── 4. Generate TTS ──────────────────────────────────────────────────
+    let audioBase64: string | null = null;
+    let audioMime = "audio/mpeg";
 
-    // ── 5. Store in DB cache ────────────────────────────────────────────
+    try {
+      console.log(
+        `[reportSpeak] Generating TTS for report ${reportId} (lang=${lang})`,
+      );
+      const ttsResult = await textToSpeech(analysisText, lang);
+      audioBase64 = ttsResult.audioBase64;
+      audioMime = ttsResult.audioMime;
+    } catch (ttsErr: any) {
+      console.warn(
+        `[reportSpeak] TTS generation error (will fallback to browser speech):`,
+        ttsErr?.message || ttsErr,
+      );
+    }
+
+    // ── 5. Store / Update in DB cache ────────────────────────────────────
     const { error: insertCacheErr } = await (supabaseAdmin as any)
       .from("report_analysis_cache")
       .upsert(
@@ -477,7 +497,6 @@ export async function reportSpeak(
       );
 
     if (insertCacheErr) {
-      // Non-fatal — log but still return the result
       console.error("[reportSpeak] Failed to cache analysis:", insertCacheErr.message);
     } else {
       console.log(`[reportSpeak] Cached analysis for report ${reportId} (lang=${lang}, docType=${docType})`);
@@ -491,7 +510,7 @@ export async function reportSpeak(
         audio_mime: audioMime,
         analysis_text: analysisText,
       },
-      "Report audio generated",
+      audioBase64 ? "Report audio generated" : "Report analysis text generated",
     );
   } catch (err) {
     next(err);
