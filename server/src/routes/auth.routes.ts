@@ -9,7 +9,7 @@ import { doctorSetupSchema } from '../validators/auth/doctor-setup.validator.js'
 
 import { registerPatient } from '../controllers/auth/patient.controller.js';
 import { registerHospitalAdmin } from '../controllers/auth/hospital-admin.controller.js';
-import { login, refreshToken, logout, getMe } from '../controllers/auth/session.controller.js';
+import { login, refreshToken, logout, getMe, sendLoginOtp, verifyLoginOtp } from '../controllers/auth/session.controller.js';
 import { doctorSetup } from '../controllers/auth/doctor-setup.controller.js';
 
 export const authRouter = Router();
@@ -22,6 +22,8 @@ authRouter.post('/hospital-admin/register', validate(registerHospitalAdminSchema
 
 // ── Login / Refresh / Logout / Me ───────────────────────────────────
 authRouter.post('/login', validate(loginSchema), login);
+authRouter.post('/otp/send', sendLoginOtp);
+authRouter.post('/otp/verify', verifyLoginOtp);
 authRouter.post('/refresh', validate(refreshTokenSchema), refreshToken);
 authRouter.post('/logout', authenticate, logout);
 authRouter.get('/me', authenticate, getMe);

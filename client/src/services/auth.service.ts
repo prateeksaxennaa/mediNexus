@@ -98,6 +98,12 @@ export type RefreshResponse = ApiEnvelope<{
 
 // ─── Auth service ─────────────────────────────────────────────────────────────
 
+export type SendOtpResponse = ApiEnvelope<{
+  sent: boolean;
+  identifier: string;
+  devOtp?: string;
+}>;
+
 export const authService = {
   /**
    * POST /api/auth/login
@@ -105,6 +111,20 @@ export const authService = {
    */
   login: (payload: LoginPayload) =>
     api.post<LoginResponse>('/api/auth/login', payload, { skipAuth: true }),
+
+  /**
+   * POST /api/auth/otp/send
+   * Requests a 6-digit OTP code to email or WhatsApp.
+   */
+  sendOtp: (identifier: string) =>
+    api.post<SendOtpResponse>('/api/auth/otp/send', { identifier }, { skipAuth: true }),
+
+  /**
+   * POST /api/auth/otp/verify
+   * Verifies the 6-digit OTP code and establishes an authenticated session.
+   */
+  verifyOtp: (identifier: string, code: string) =>
+    api.post<LoginResponse>('/api/auth/otp/verify', { identifier, code }, { skipAuth: true }),
 
   /**
    * POST /api/auth/patient/register

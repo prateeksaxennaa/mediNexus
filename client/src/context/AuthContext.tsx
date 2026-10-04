@@ -27,6 +27,11 @@ interface AuthContextValue {
    */
   login: (email: string, password: string) => Promise<AuthUser>;
 
+  /**
+   * Signs the user in with a verified OTP code.
+   */
+  loginWithOtp: (identifier: string, code: string) => Promise<AuthUser>;
+
   /** Signs the user out — revokes the server session, clears cookies, updates state. */
   logout: () => Promise<void>;
 
@@ -120,6 +125,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return data.user;
   };
 
+  // ── loginWithOtp ────────────────────────────────────────────────────────────
+
+  const loginWithOtp = async (identifier: string, code: string): Promise<AuthUser> => {
+    const { data } = await authService.verifyOtp(identifier, code);
+    setUser(data.user);
+
+    const channel = openChannel();
+    if (channel) {
+      channel.postMessage('login' satisfies AuthMessage);
+      channel.close();
+    }
+
+    return data.user;
+  };
+
   // ── logout ─────────────────────────────────────────────────────────────────
 
   const logout = async () => {
@@ -162,6 +182,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         isAuthenticated: user !== null,
         isLoading,
         login,
+        loginWithOtp,
         logout,
         applySession,
       }}
