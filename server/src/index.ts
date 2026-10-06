@@ -30,29 +30,33 @@ import { startDoctorSlotSeeder } from './jobs/doctorSlotSeeder.js';
 import { startWhatsAppReminderJob } from './jobs/whatsappReminder.js';
 import { runMigrations } from './db/runMigrations.js';
 
-const PORT = env.PORT;
+const PORT = Number(process.env.PORT) || env.PORT || 10000;
+const HOST = '0.0.0.0';
 
-// Run pending DB migrations before accepting traffic
-runMigrations().then(() => {
-  const server = app.listen(PORT, () => {
-    console.log(`\nmediNexus API server running on http://localhost:${PORT}`);
-    console.log(`   Environment: ${env.NODE_ENV}`);
-    console.log(`   Health check: http://localhost:${PORT}/api/health\n`);
+// Start server immediately on 0.0.0.0:PORT to satisfy Render/cloud port binding
+const server = app.listen(PORT, HOST, () => {
+  console.log(`\nmediNexus API server running on http://${HOST}:${PORT}`);
+  console.log(`   Environment: ${env.NODE_ENV}`);
+  console.log(`   Health check: http://${HOST}:${PORT}/api/health\n`);
 
-    // Start background jobs
-    startSlotLockCleanupJob();
-    startWaitlistQueueJob();
-    startServiceSlotSeeder();
-    startDoctorSlotSeeder();
-    startWhatsAppReminderJob();
-  });
+  // Start background jobs
+  startSlotLockCleanupJob();
+  startWaitlistQueueJob();
+  startServiceSlotSeeder();
+  startDoctorSlotSeeder();
+  startWhatsAppReminderJob();
+});
 
-  server.on('error', (err: NodeJS.ErrnoException) => {
-    if (err.code === 'EADDRINUSE') {
-      console.error(`\n[server] Port ${PORT} is already in use.`);
-      console.error(`   Run:  fuser -k ${PORT}/tcp   to free it, then restart.\n`);
-      process.exit(1);
-    }
-    throw err;
-  });
+server.on('error', (err: NodeJS.ErrnoException) => {
+  if (err.code === 'EADDRINUSE') {
+    console.error(`\n[server] Port ${PORT} is already in use.`);
+    console.error(`   Run:  fuser -k ${PORT}/tcp   to free it, then restart.\n`);
+    process.exit(1);
+  }
+  throw err;
+});
+
+// Run pending DB migrations asynchronously in background without delaying port binding
+runMigrations().catch((err) => {
+  console.error('[migrations] Startup migration error:', (err as Error)?.message || err);
 });

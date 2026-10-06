@@ -214,6 +214,7 @@ export async function runMigrations(): Promise<void> {
     connectionString: databaseUrl,
     ssl: { rejectUnauthorized: false },
     connectionTimeoutMillis: 5000,
+    statement_timeout: 10000,
   });
 
   let anyApplied = false;
