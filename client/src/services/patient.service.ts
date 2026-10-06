@@ -1,4 +1,4 @@
-import { api } from '@/lib/api';
+import { api, API_BASE_URL } from '@/lib/api';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -460,7 +460,7 @@ export const patientService = {
 // These use fetch with keepalive:true so the request survives page reload/close.
 // Use these in beforeunload handlers and useEffect cleanups.
 
-const _BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:5000';
+const _BASE = API_BASE_URL;
 
 export function releaseSlotLockBeacon(slotId: string): void {
   try {

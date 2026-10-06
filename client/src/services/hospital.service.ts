@@ -1,4 +1,4 @@
-import { api } from '@/lib/api';
+import { api, API_BASE_URL } from '@/lib/api';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -311,7 +311,7 @@ export const hospitalService = {
 // ─── Report Upload ─────────────────────────────────────────────────────────────
 // Exported separately because it uses raw fetch (multipart), not the api helper.
 
-const BASE_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:5000';
+const BASE_URL = API_BASE_URL;
 
 export interface HospitalPatient {
   id: string;

@@ -23,10 +23,11 @@ const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
 
 /** Base cookie options shared by both auth cookies. */
 function baseCookieOptions(): CookieOptions {
+  const isProd = env.NODE_ENV === 'production';
   return {
     httpOnly: true,
-    secure: env.NODE_ENV === 'production',
-    sameSite: 'lax',
+    secure: isProd,
+    sameSite: isProd ? 'none' : 'lax',
     path: '/',
   };
 }

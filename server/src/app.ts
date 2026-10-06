@@ -22,7 +22,15 @@ const corsOptions: cors.CorsOptions = {
       return;
     }
 
-    callback(null, allowedOrigins.has(origin));
+    if (
+      allowedOrigins.has(origin) ||
+      /^https:\/\/[a-zA-Z0-9_.-]+\.vercel\.app$/.test(origin)
+    ) {
+      callback(null, true);
+      return;
+    }
+
+    callback(null, false);
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
